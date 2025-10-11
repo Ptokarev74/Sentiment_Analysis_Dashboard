@@ -1,0 +1,70 @@
+# api.py
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from transformers import pipeline
+import praw
+
+# --- SETUP (Same as before) ---
+app = Flask(__name__)
+CORS(app)
+
+print("Loading sentiment analysis model...")
+sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+print("Model loaded.")
+
+CLIENT_ID = "YOUR_CLIENT_ID"
+CLIENT_SECRET = "YOUR_CLIENT_SECRET"
+USER_AGENT = "Sentiment analysis script by u/YourUsername"
+
+print("Connecting to Reddit...")
+reddit = praw.Reddit(
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET,
+    user_agent=USER_AGENT,
+)
+print("Connected to Reddit.")
+
+
+@app.route('/get_sentiment_for_topic', methods=['POST'])
+def get_sentiment_for_topic():
+    # 1. Get ONLY the topic from the request
+    data = request.get_json()
+    topic = data.get('topic')
+
+    if not topic:
+        return jsonify({'error': 'Missing topic'}), 400
+
+    # 2. Fetch comments by searching ALL of Reddit
+    print(f"Fetching comments from ALL of Reddit about '{topic}'...")
+    # This is the key change: we use reddit.subreddit('all')
+    all_reddit = reddit.subreddit('all')
+    submissions = all_reddit.search(topic, limit=10, sort='relevance') # Get 10 most relevant posts
+    
+    comments_to_analyze = []
+    for submission in submissions:
+        # submission.comments.replace_more(limit=0) # Flattens the comment tree
+        for comment in submission.comments.list():
+            if len(comments_to_analyze) < 100: # Analyze up to 100 comments
+                comments_to_analyze.append(comment.body)
+            else:
+                break
+        if len(comments_to_analyze) >= 100:
+            break
+            
+    if not comments_to_analyze:
+        return jsonify({'error': 'No comments found for this topic.'}), 404
+
+    # 3. Analyze sentiment for each comment
+    print(f"Analyzing sentiment for {len(comments_to_analyze)} comments...")
+    results = sentiment_analyzer(comments_to_analyze)
+
+    # 4. Aggregate the results
+    sentiment_counts = {'POSITIVE': 0, 'NEGATIVE': 0}
+    for result in results:
+        sentiment_counts[result['label']] += 1
+
+    print("Analysis complete. Returning results.")
+    return jsonify(sentiment_counts)
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
